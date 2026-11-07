@@ -1,0 +1,12 @@
+{
+  "name": "herdr-machine-temperature",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test",
+    "install:mod": "node manage.mjs install",
+    "uninstall:mod": "node manage.mjs uninstall"
+  }
+}
