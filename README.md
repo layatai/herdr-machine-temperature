@@ -29,6 +29,24 @@ in place. Removal keeps the source and any sensor software:
 npm run uninstall:mod
 ```
 
+## Fix missing sensor setup
+
+When the selected Mac has no `smctemp`, the status bar shows
+`luximini · Setup needed` in the warning color, with a **Fix** link. Fix opens
+[the upstream installation guide](https://github.com/narugit/smctemp#installation),
+where the install command can be copied. Run it in the selected machine's terminal:
+
+```sh
+brew install narugit/tap/smctemp
+```
+
+The tooltip names the machine and explains this step. The helper detects the tool
+on the next sample and restores temperatures automatically. It does not install
+remote software. Connection failures, timed-out reads, and inaccessible or
+unsupported sensors retain their own error instead of suggesting installation.
+The native mod API does not expose a copyable popover; the link opens the guide
+using the app's supported HTTPS link element.
+
 ## Behavior
 
 The dependency-free helper queries the app's selected host, resolves its saved
@@ -67,3 +85,11 @@ validated, and the installed helper followed Local → dellom → Local through
 the supported app CLI. Dellom returned CPU 43°C / GPU 42°C. Luximini returned
 no accessible sensor readings and reported N/A. Native screenshots were not
 verified. The LaunchAgent bootstrap needed one retry after reinstall.
+
+Verified on 2026-11-11 for setup guidance: all 21 Node tests passed in 3.19 seconds,
+including native mod validation of missing-tool and escaped-host fixtures.
+Tests cover missing-tool detection, the selected-machine instruction, and clearing
+the warning after readings recover. Native click/clipboard behavior was not checked.
+The running helper published luximini Setup needed with its Fix link after
+selecting luximini via the supported app CLI; Sheprd reported drawn=true and
+no mod error. The original Local selection was restored.

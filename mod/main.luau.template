@@ -4,9 +4,17 @@ local ui = require("@herdr/ui")
 return herdr.mod({
   watch = {},
   view = function()
-    return ui.tooltip({
-      text = __TOOLTIP__,
+    local content = ui.row({
+      gap = "small",
+      align = "center",
       ui.text({ text = __LABEL__, tone = __TONE__, size = "small" }),
     })
+    if __NEEDS_SETUP__ then
+      table.insert(content, ui.link({
+        label = "Fix",
+        url = "https://github.com/narugit/smctemp#installation",
+      }))
+    end
+    return ui.tooltip({ text = __TOOLTIP__, content })
   end,
 })

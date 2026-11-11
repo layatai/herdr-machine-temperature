@@ -206,3 +206,55 @@ test('remote timeouts are bounded and errors do not expose stderr', async () => 
 test('rejects malformed selected-host state', async () => {
   await assert.rejects(selectedHost(async () => ({ stdout: '[]' })), /Selected machine unavailable/);
 });
+
+
+test('missing remote sensor exposes an actionable setup state and clears after installation', async t => {
+  const dir = await temporary(t);
+  let installed = false;
+  const host = { ...remoteHost, label: 'luximini' };
+  const run = async (_, args) => {
+    if (args[0] === 'host') return hostOutput(host);
+    if (args[0] === 'machine') return machineOutput;
+    return { stdout: installed ? '52\n46\n' : 'SMCTEMP_MISSING\nSMCTEMP_MISSING\n' };
+  };
+  const missing = await sampleSelected('/sensor', template, dir, run);
+  assert.equal(missing.cpu.error, 'smctemp is not installed');
+  assert.equal(missing.gpu.value, null);
+  const guide = await readFile(join(dir, 'main.luau'), 'utf8');
+  assert.match(guide, /luximini · Setup needed/);
+  assert.match(guide, /tone = "warning"/);
+  assert.match(guide, /if true then/);
+  assert.match(guide, /run it in luximini's terminal/);
+  assert.match(guide, /brew install narugit\/tap\/smctemp/);
+  assert.match(guide, /https:\/\/github.com\/narugit\/smctemp#installation/);
+  installed = true;
+  await sampleSelected('/sensor', template, dir, run);
+  const recovered = await readFile(join(dir, 'main.luau'), 'utf8');
+  assert.match(recovered, /luximini CPU 52°C · GPU 46°C/);
+  assert.match(recovered, /if false then/);
+  assert.doesNotMatch(recovered, /Setup needed|smctemp is not installed|run it in luximini/);
+});
+
+test('sensor unavailability does not incorrectly prescribe installation', async () => {
+  const unavailable = { value: null, error: 'sensor unavailable on selected machine' };
+  for (const error of ['sensor read timed out', 'remote connection or sensor read failed', unavailable.error]) {
+    const rendered = renderMod(template, snapshot(unavailable, { value: null, error }));
+    assert.match(rendered, /if false then/);
+    assert.doesNotMatch(rendered, /Setup needed|brew install/);
+  }
+});
+
+test('Sheprd validates missing-sensor setup and local missing-executable fixtures', async t => {
+  const dir = join(await temporary(t), NAME);
+  await mkdir(dir);
+  await writeFile(join(dir, 'mod.toml'), await readFile(join(ROOT, 'mod', 'mod.toml')));
+  for (const error of ['smctemp is not installed', 'sensor executable missing']) {
+    const rendered = renderMod(template, {
+      ...snapshot({ value: null, error }, { value: null, error }),
+      host: { id: 'ssh:abc', label: 'host"\\unsafe\n' },
+    });
+    await writeAtomic(join(dir, 'main.luau'), rendered);
+    const result = await execute(HERDR, ['mod', 'check', dir]);
+    assert.match(result.stdout, /is valid/);
+  }
+});

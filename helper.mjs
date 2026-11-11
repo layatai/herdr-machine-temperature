@@ -48,20 +48,28 @@ export function renderMod(template, snapshot) {
   const failures = [['CPU', snapshot.cpu], ['GPU', snapshot.gpu]]
     .filter(([, sensor]) => sensor.error)
     .map(([name, sensor]) => `${name}: ${sensor.error}`);
+  const host = snapshot.host?.label || 'Local';
+  const needsSetup = [snapshot.cpu, snapshot.gpu].some(sensor =>
+    ['smctemp is not installed', 'sensor executable missing'].includes(sensor.error));
   const values = {
-    __LABEL__: `${snapshot.host?.label || 'Local'} ${cpu} · ${gpu}`,
+    __LABEL__: needsSetup ? `${host} · Setup needed` : `${host} ${cpu} · ${gpu}`,
     __TOOLTIP__: [
-      `Selected machine: ${snapshot.host?.label || 'Local'}`,
+      `Selected machine: ${host}`,
       `${cpu} · ${gpu}`,
       `Last sample: ${snapshot.sampledAt}`,
       ...failures,
+      ...(needsSetup ? [
+        `Click Fix, copy the install command, and run it in ${host}'s terminal:`,
+        'brew install narugit/tap/smctemp',
+        'Temperatures resume automatically after installation.',
+      ] : []),
     ].join(' | '),
-    __TONE__: failures.length ? 'muted' : 'normal',
+    __TONE__: needsSetup ? 'warning' : failures.length ? 'muted' : 'normal',
   };
   const luaString = value => '"' + value.replace(/[\u0000-\u001f\u007f]/g, ' ')
     .replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
-  return template.replace(/__LABEL__|__TOOLTIP__|__TONE__/g,
-    key => luaString(values[key]));
+  return template.replace(/__LABEL__|__TOOLTIP__|__TONE__|__NEEDS_SETUP__/g,
+    key => key === '__NEEDS_SETUP__' ? String(needsSetup) : luaString(values[key]));
 }
 
 export async function writeAtomic(file, content) {
@@ -92,7 +100,7 @@ Darwin)
   if [ -n "$sensor" ]; then
     "$sensor" -c -n20 -i25 2>/dev/null || echo N/A
     "$sensor" -g -n20 -i25 2>/dev/null || echo N/A
-  else printf 'N/A\\nN/A\\n'; fi
+  else printf 'SMCTEMP_MISSING\\nSMCTEMP_MISSING\\n'; fi
   ;;
 Linux)
   cpu=''; gpu=''
@@ -137,7 +145,7 @@ export async function remoteReadings(host, run = execute) {
     const lines = stdout.trim().split(/\r?\n/);
     if (lines.length !== 2) return missing('invalid remote sensor response');
     const reading = raw => /^\d+(?:\.\d+)?$/.test(raw) && Number.isFinite(Number(raw)) && Number(raw) > 0
-      ? { value: Number(raw), error: null } : { value: null, error: 'sensor unavailable on selected machine' };
+      ? { value: Number(raw), error: null } : { value: null, error: raw === 'SMCTEMP_MISSING' ? 'smctemp is not installed' : 'sensor unavailable on selected machine' };
     return { cpu: reading(lines[0]), gpu: reading(lines[1]) };
   } catch (error) {
     return missing(error.killed || error.signal === 'SIGKILL' ? 'remote sensor read timed out' : 'remote connection or sensor read failed');
