@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { HERDR, LABEL, NAME, ROOT, paths, sample, writeAtomic } from './helper.mjs';
+import { HERDR, LABEL, NAME, ROOT, paths, sampleSelected, writeAtomic } from './helper.mjs';
 
 const execute = promisify(execFile);
 const MARKER = 'Managed by herdr-machine-temperature v1\n';
@@ -87,7 +87,7 @@ async function main() {
     await mkdir(candidate);
     await copyFile(join(ROOT, 'mod', 'mod.toml'), join(candidate, 'mod.toml'));
     const template = await readFile(join(ROOT, 'mod', 'main.luau.template'), 'utf8');
-    const snapshot = await sample(binary, template, candidate);
+    const snapshot = await sampleSelected(binary, template, candidate);
     const checked = await execute(HERDR, ['mod', 'check', candidate]);
     console.log(checked.stdout.trim());
     await stopService();

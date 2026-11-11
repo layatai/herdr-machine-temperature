@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
-import { HERDR, NAME, ROOT, logEvent, paths, readSensor, renderMod, sample, writeAtomic } from '../helper.mjs';
+import { HERDR, NAME, ROOT, logEvent, paths, readSensor, renderMod, sample, sampleSelected, remoteReadings, selectedHost, writeAtomic } from '../helper.mjs';
 import { launchAgent } from '../manage.mjs';
 
 const execute = promisify(execFile);
@@ -64,10 +64,10 @@ test('publishes partial failures independently and recovers on the next sample',
   const dir = await temporary(t);
   const first = await sample('/sensor', template, dir, async (_, flag) => flag === '-c' ? ok(41.7) : unavailable);
   assert.equal(first.cpu.value, 41.7);
-  assert.match(await readFile(join(dir, 'main.luau'), 'utf8'), /Mac CPU 42°C · GPU N\/A/);
+  assert.match(await readFile(join(dir, 'main.luau'), 'utf8'), /Local CPU 42°C · GPU N\/A/);
   await sample('/sensor', template, dir, async (_, flag) => flag === '-c' ? ok(43.2) : ok(47.8));
   const recovered = await readFile(join(dir, 'main.luau'), 'utf8');
-  assert.match(recovered, /Mac CPU 43°C · GPU 48°C/);
+  assert.match(recovered, /Local CPU 43°C · GPU 48°C/);
   assert.doesNotMatch(recovered, /sensor read failed|N\/A/);
 });
 
@@ -126,8 +126,83 @@ test('Herdr validates healthy, partial, unavailable and escaped-input mod fixtur
   const escaped = { value: null, error: 'quote" backslash\\ newline\n control\u0001 literal\\u0001 __LABEL__' };
   for (const fixture of [snapshot(), snapshot(ok(52), unavailable), snapshot(unavailable, unavailable), snapshot(escaped, unavailable)]) {
     const rendered = renderMod(template, fixture);
-    assert.match(rendered, /Local Mac temperatures/);
+    assert.match(rendered, /Selected machine: Local/);
     await writeAtomic(join(dir, 'main.luau'), rendered);
     await execute(HERDR, ['mod', 'check', dir]);
   }
+});
+
+const remoteHost = { id: 'ssh:abc', label: 'Remote', selected: true };
+const localHost = { id: 'local', label: 'Local', selected: true };
+const hostOutput = host => ({ stdout: JSON.stringify([host]) });
+const machineOutput = { stdout: 'abc\tRemote\tuser@machine\tdefault\tenabled\n' };
+
+// The saved-machine list has five columns: ID, label, target, session, enabled.
+test('uses the selected machine ID and never reads local sensors for a remote selection', async t => {
+  const dir = await temporary(t);
+  let calls = 0;
+  const run = async (binary, args) => {
+    if (args[0] === 'host') return hostOutput(remoteHost);
+    if (args[0] === 'machine') return machineOutput;
+    calls++;
+    assert.equal(binary, '/usr/bin/ssh');
+    assert.ok(args.includes('user@machine'));
+    assert.ok(args.includes('StrictHostKeyChecking=yes'));
+    return { stdout: '63.2\n48\n' };
+  };
+  const result = await sampleSelected('/sensor', template, dir, run, () => { throw new Error('local sensor used'); });
+  assert.equal(calls, 1);
+  assert.equal(result.host.id, remoteHost.id);
+  assert.equal(result.cpu.value, 63.2);
+  assert.match(await readFile(join(dir, 'main.luau'), 'utf8'), /Remote CPU 63°C · GPU 48°C/);
+});
+
+test('discards an in-flight reading if the user selects another machine', async t => {
+  const dir = await temporary(t);
+  let lookups = 0;
+  const result = await sampleSelected('/sensor', template, dir, async () => hostOutput(++lookups === 1 ? localHost : remoteHost), async () => ok(90));
+  assert.equal(result.host.id, remoteHost.id);
+  assert.equal(result.cpu.value, null);
+  assert.equal(result.gpu.value, null);
+  assert.match(await readFile(join(dir, 'main.luau'), 'utf8'), /Remote CPU N\/A · GPU N\/A/);
+});
+
+test('reports unavailable selection without reusing local readings', async t => {
+  const dir = await temporary(t);
+  const result = await sampleSelected('/sensor', template, dir, async () => { throw new Error('app closed'); });
+  assert.equal(result.cpu.value, null);
+  assert.match(result.cpu.error, /selected machine unavailable/);
+});
+
+test('validates remote readings and keeps independent sensor failures', async () => {
+  const read = stdout => remoteReadings(remoteHost, async (_, args) => args[0] === 'machine' ? machineOutput : { stdout });
+  assert.deepEqual((await read('51\nN/A')).cpu, ok(51));
+  assert.equal((await read('51\nN/A')).gpu.value, null);
+  for (const output of ['garbage', '1\n2\n3', 'NaN\nInfinity', '0\n-5', '1e999\n42°C']) {
+    const value = await read(output);
+    assert.equal(value.cpu.value, null);
+    assert.equal(value.gpu.value, null);
+  }
+});
+
+test('refuses unknown, disabled, or option-shaped saved SSH targets', async () => {
+  for (const machine of ['other\tRemote\tuser@machine\tdefault\tenabled', 'abc\tRemote\tuser@machine\tdefault\tdisabled', 'abc\tRemote\t-oProxyCommand=bad\tdefault\tenabled']) {
+    let calls = 0;
+    const result = await remoteReadings(remoteHost, async () => { calls++; return { stdout: machine }; });
+    assert.equal(calls, 1);
+    assert.equal(result.cpu.value, null);
+  }
+});
+
+test('remote timeouts are bounded and errors do not expose stderr', async () => {
+  const result = await remoteReadings(remoteHost, async (_, args, options) => {
+    if (args[0] === 'machine') return machineOutput;
+    assert.equal(options.timeout, 6000);
+    throw Object.assign(new Error('private stderr'), { killed: true });
+  });
+  assert.equal(result.cpu.error, 'remote sensor read timed out');
+});
+
+test('rejects malformed selected-host state', async () => {
+  await assert.rejects(selectedHost(async () => ({ stdout: '[]' })), /Selected machine unavailable/);
 });
